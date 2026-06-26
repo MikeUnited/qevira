@@ -1,0 +1,203 @@
+import { NextRequest, NextResponse } from "next/server";
+
+import { erpnextFetch, readErpnextEnv } from "@/lib/erpnext-auth";
+
+type BamysFields = {
+  email?: string;
+  companyName?: string;
+  company_name?: string;
+  contactPerson?: string;
+  contact_person?: string;
+  first_name?: string;
+  firstName?: string;
+  tin?: string;
+  otp?: string;
+  bankAccounts?: string;
+  organizationType?: string;
+  registerMode?: string;
+  phone?: string;
+};
+
+function parseMaybeJson<T>(raw: string | null): T | undefined {
+  if (raw == null || raw === "") return undefined;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildUserPayload(fields: BamysFields) {
+  const email =
+    typeof fields.email === "string" ? fields.email.trim() : "";
+
+  let otpCode = "";
+  if (fields.otp) {
+    const parsed = parseMaybeJson<string[]>(fields.otp);
+    if (Array.isArray(parsed)) {
+      otpCode = parsed.join("").trim();
+    }
+  }
+
+  const contact =
+    (typeof fields.contactPerson === "string" && fields.contactPerson.trim()) ||
+    (typeof fields.contact_person === "string" && fields.contact_person.trim()) ||
+    (typeof fields.first_name === "string" && fields.first_name.trim()) ||
+    (typeof fields.firstName === "string" && fields.firstName.trim()) ||
+    otpCode ||
+    "";
+  const company =
+    (typeof fields.company_name === "string" && fields.company_name.trim()) ||
+    (typeof fields.companyName === "string" && fields.companyName.trim()) ||
+    "";
+
+  const first_name = contact || company || "User";
+
+  return {
+    email,
+    first_name,
+    send_welcome_email: 0 as const,
+  };
+}
+
+function collectTextFields(form: FormData): BamysFields {
+  const out: BamysFields = {};
+  for (const [key, value] of form.entries()) {
+    if (typeof value !== "string") continue;
+    if (
+      key === "businessLicenseFile" ||
+      key === "efdaLicenseFile" ||
+      key === "taxpayerCertFile" ||
+      key === "tinCertificateFile"
+    ) {
+      continue;
+    }
+    (out as Record<string, string>)[key] = value;
+  }
+  return out;
+}
+
+/** Parse Frappe REST error payloads (message, exc, _server_messages). */
+function extractFrappeMessage(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const o = data as Record<string, unknown>;
+  if (typeof o.message === "string" && o.message.trim()) return o.message.trim();
+  if (typeof o.exc === "string") {
+    const line = o.exc.split("\n").find((l) => l.trim()) ?? o.exc;
+    return line.length > 280 ? `${line.slice(0, 280)}…` : line;
+  }
+  if (Array.isArray(o._server_messages)) {
+    for (const raw of o._server_messages) {
+      try {
+        const inner = JSON.parse(String(raw)) as { message?: string };
+        if (typeof inner.message === "string" && inner.message.trim()) {
+          return inner.message.trim();
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return null;
+}
+
+export async function POST(req: NextRequest) {
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid multipart body" },
+      { status: 400 }
+    );
+  }
+
+  const businessLicenseFile = form.get("businessLicenseFile");
+  const efdaLicenseFile = form.get("efdaLicenseFile");
+  const taxpayerCertFile = form.get("taxpayerCertFile");
+
+  const nameOf = (entry: FormDataEntryValue | null) =>
+    entry instanceof File ? entry.name : "(none)";
+
+  console.log("Files received:", {
+    businessLicenseFile: nameOf(businessLicenseFile),
+    efdaLicenseFile: nameOf(efdaLicenseFile),
+    taxpayerCertFile: nameOf(taxpayerCertFile),
+  });
+
+  const textFields = collectTextFields(form);
+  const bodyForUser = buildUserPayload(textFields);
+
+  const env = readErpnextEnv();
+  if ("error" in env) {
+    return NextResponse.json({ error: env.error }, { status: 500 });
+  }
+
+  if (!bodyForUser.email) {
+    return NextResponse.json(
+      { error: "email is required" },
+      { status: 400 }
+    );
+  }
+
+  const payload = {
+    email: bodyForUser.email,
+    first_name: bodyForUser.first_name,
+    send_welcome_email: bodyForUser.send_welcome_email,
+  };
+  const jsonBody = JSON.stringify(payload);
+
+  console.log("[api/register] ERPNext:", {
+    path: "/api/resource/User",
+    site: env.siteName,
+    keyPrefix: `${env.apiKey.slice(0, 4)}…`,
+  });
+
+  try {
+    const erpResponse = await erpnextFetch(env, "/api/resource/User", {
+      method: "POST",
+      body: jsonBody,
+    });
+
+    const text = await erpResponse.text();
+    let data: unknown;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
+
+    if (!erpResponse.ok) {
+      const frappeMsg = extractFrappeMessage(data);
+      let friendly = frappeMsg ?? `ERPNext returned ${erpResponse.status}`;
+
+      if (erpResponse.status === 401) {
+        friendly =
+          "ERPNext rejected credentials (401). Regenerate keys in Desk → User → API Access. Set ERPNEXT_SITE_NAME to your site folder (run: ls sites/ in the bench; often \"frontend\"). Match ERPNEXT_URL to how you open ERPNext (http://127.0.0.1:8080 vs http://localhost:8080).";
+        console.error(
+          "[api/register] ERPNext 401 — verify keys, ERPNEXT_SITE_NAME, and URL."
+        );
+      } else if (erpResponse.status === 409) {
+        friendly =
+          frappeMsg ??
+          "This email is already registered in ERPNext. Sign in with that account or use a different email.";
+      }
+
+      return NextResponse.json(
+        {
+          ...(typeof data === "object" && data !== null ? data : {}),
+          error: friendly,
+        },
+        { status: erpResponse.status }
+      );
+    }
+
+    return NextResponse.json(data, { status: erpResponse.status });
+  } catch (e) {
+    console.error("[api/register] fetch error:", e);
+    return NextResponse.json(
+      { error: "Failed to reach registration service" },
+      { status: 502 }
+    );
+  }
+}
