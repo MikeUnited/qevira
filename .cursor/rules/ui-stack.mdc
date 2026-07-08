@@ -1,0 +1,27 @@
+---
+description: Approved UI stack — Tailwind, Shadcn, Radix, Lucide only; no third-party UI kits or other icon packs
+alwaysApply: true
+---
+
+# UI stack (strict)
+
+Do **not** introduce, suggest, install, or import third-party UI component libraries, CSS-in-JS frameworks, or icon packs outside this stack.
+
+## Approved
+
+- **Tailwind CSS** — all styling and utilities.
+- **Shadcn UI** — all pre-built components (`components/ui/*`).
+- **Radix UI** — only as headless primitives underlying Shadcn (do not add Radix for ad-hoc use outside existing patterns).
+- **Lucide React** — all icons.
+
+## Banned
+
+- Component kits: Material UI (MUI), Chakra, Ant Design, Bootstrap, Mantine, NextUI, etc.
+- CSS-in-JS: styled-components, Emotion, CSS Modules (unless already required by an approved tool).
+- Other icon sets: Heroicons, Font Awesome, etc.
+
+## When building UI
+
+- Compose with **Tailwind** and existing **Shadcn** pieces in `components/ui/`.
+- If a Shadcn primitive is missing, add it with: `npx shadcn@latest add <component>` (use the project’s documented command if different).
+- **Input height**: default form controls use **`h-11`** via `components/ui/input.tsx`; keep selects and native `<select>` at the same visual height unless there is a documented exception.

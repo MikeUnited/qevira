@@ -1,0 +1,176 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model CartItem {
+  id          String   @id @default(uuid())
+  userId      String
+  offerToken  String
+  genericName String
+  vendorAlias String
+  price       Float
+  uom         String
+  quantity    Int
+  createdAt   DateTime @default(now())
+  orderId     String?
+  orderStatus String?
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([userId, vendorAlias])
+}
+
+model VerificationCode {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  code       String
+  attempts   Int      @default(0)
+  lastSentAt DateTime @default(now())
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([email])
+}
+
+model IdempotencyRecord {
+  id         String   @id @default(uuid())
+  key        String   @unique
+  userId     String
+  response   String   // JSON stringified response
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model SupplierCredentials {
+  id         String   @id @default(uuid())
+  supplierId String   @unique // Stores the ERPNext Supplier document name (e.g., SUPPLIER-PLC)
+  /** AES-GCM ciphertext (iv:tag:hex) via encryptCredential */
+  apiKey     String
+  /** AES-GCM ciphertext (iv:tag:hex) via encryptCredential */
+  apiSecret  String
+  updatedAt  DateTime @updatedAt
+}
+
+model BankAccount {
+  id                   String   @id @default(uuid())
+  profileId            String
+  bankName             String
+  branchName           String
+  accountName          String
+  /** AES-GCM ciphertext (iv:tag:hex) via encryptCredential; legacy plaintext supported in read path */
+  accountNumber        String
+  /** SHA-256 (hex) of normalized digits; used for per-profile dedup (ciphertext is non-deterministic) */
+  accountNumberHash    String
+  isPrimary            Boolean  @default(false)
+  verificationStatus   String   @default("PENDING")
+  createdAt            DateTime @default(now())
+
+  @@index([profileId])
+  @@unique([profileId, accountNumberHash])
+}
+
+model TeamMember {
+  id                 String            @id @default(uuid())
+  email              String
+  organizationId     String
+  organizationKind   OrganizationKind  @default(CUSTOMER)
+  role               TeamRole          @default(PHARMACIST)
+  invitedBy          String
+  status             InviteStatus      @default(PENDING)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@unique([email, organizationId])
+  @@index([organizationId])
+  @@index([email])
+}
+
+enum OrganizationKind {
+  CUSTOMER
+  SUPPLIER
+}
+
+enum TeamRole {
+  OWNER
+  DIRECTOR
+  PHARMACIST
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+
+model CartApprovalRequest {
+  id             String         @id @default(uuid())
+  requestedBy    String
+  organizationId String
+  status         ApprovalStatus @default(PENDING)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([organizationId])
+  @@index([requestedBy])
+  @@index([status])
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType
+  link      String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId])
+  @@index([userId, isRead])
+}
+
+enum NotificationType {
+  ORDER_UPDATE
+  TEAM_INVITE
+  APPROVAL_REQUEST
+  KYC_STATUS
+  SYSTEM
+}
+
+/** Tracks buyer-confirmed receipt of procurement orders (ERPNext SO name). */
+model ProcurementReceiptConfirmation {
+  id        String   @id @default(uuid())
+  userId    String
+  orderId   String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, orderId])
+  @@index([userId])
+}
+
+/** ERPNext Customer `name` → buyer warehouse (fallback when Customer.custom_warehouse is unavailable). */
+model BuyerWarehouse {
+  id             String   @id @default(uuid())
+  customerId     String   @unique
+  warehouseName  String
+  createdAt      DateTime @default(now())
+}
